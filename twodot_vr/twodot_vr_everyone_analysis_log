@@ -1,0 +1,809 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Feb 18 10:19:31 2021
+
+@author: maddy
+"""
+
+import matplotlib.pyplot as plt
+import numpy as np
+import ast
+from expyfun.io import read_tab
+
+import scipy.stats as ss
+from scipy.optimize import fmin
+from expyfun.analyze import sigmoid
+from matplotlib import rcParams
+from matplotlib import rc
+rcParams['font.sans-serif'] = "Arial"
+plt.rc('font', size=10)
+plt.rc('axes', titlesize=10)
+do_resamp = True
+n_resamp = 1000
+
+fnames = ['001_2021-04-14 11_40_52.694439',
+          '001_2021-04-16 15_23_34.366138',
+          '001_2021-04-17 14_23_47.496353',
+          '001_2021-04-21 10_43_09.994708',
+          '001_2021-04-23 15_13_44.098469']
+
+percent_correct_total = []
+threshold_days = []
+total_responses = []
+for rep, fname in enumerate(fnames):
+# %% read in data, parse conditions, judge correct responses
+    data = read_tab('raw_data/' + fname + '.tab')
+    
+    trial_ids = np.array([d['trial_id'][0][0] for d in data])
+    
+    raw_resp = np.array([int(d['response'][0][0]) if d['response'] else np.nan for d in data])[trial_ids != 'warmup']
+    correct_resp = np.array([ast.literal_eval(d['correct'][0][0]) if d['correct'][0][0] != 'nan' else np.nan for d in data])[trial_ids != 'warmup'] # T, F, or nan
+    
+    trial_ids = trial_ids[trial_ids != 'warmup']
+    
+    # %% params
+    if rep:
+        n_trials = 16
+    else:
+        n_trials = 8 # trials per session
+    sep_cond = np.arange(4, 33, 4)
+    vis_cond = ['none', 'central', 'matched']
+    responses = np.zeros((len(vis_cond), 2, len(sep_cond), n_trials)) # vis x dur x sep
+    trial_end_dur_inds = [str.find(t, '_') for t in trial_ids]
+    durs = np.array([int(t[3:t_end]) for t, t_end in zip(trial_ids, trial_end_dur_inds)])
+    trial_sep_inds = [str.find(t, 'p') for t in trial_ids]
+    trial_center_inds = [str.find(t, 'c') for t in trial_ids]
+    trial_lr_inds = [str.find(t, 'l') for t in trial_ids]
+    seps = np.array([int(t[t_s + 1:t_c - 1]) for t, t_s, t_c in zip(trial_ids, trial_sep_inds, trial_center_inds)])
+    lr = [int(t[t_l + 2]) for t, t_l in zip(trial_ids, trial_lr_inds)]
+    vis = np.array([t[t_l + 4:] for t, t_l in zip(trial_ids, trial_lr_inds)])
+    
+    dur_cond = np.unique(durs)
+    # %% for loop tree for conditions
+    for i, v in enumerate(vis_cond):
+        for ii, d in enumerate(dur_cond):
+            for iii, s in enumerate(sep_cond):
+                vis_match = vis == v
+                dur_match = durs == d
+                sep_match = seps == s
+                inds = vis_match * dur_match * sep_match
+                responses[i, ii, iii] = correct_resp[inds]
+    total_responses.append(responses)
+    # %% calculate a few basic measures
+    
+    percent_correct = 100 * np.nansum(responses, -1) / responses.shape[-1]
+    improvement_none = percent_correct[-1] - percent_correct[0]
+    improvement_central = percent_correct[-1] - percent_correct[1]
+    # %% basic plot of the raw results
+    
+    plt.figure(20, figsize=(18/2.54, 14/2.54))
+    plt.subplot(3, 5, rep+1)
+    linestyles = [':', '-']
+    colors = ['#BBCC33', '#88CCE8', '#882255']
+    for ii, d in enumerate(dur_cond):
+        for i, v in enumerate(vis_cond):
+            plt.plot(sep_cond, percent_correct[i, ii], linestyles[ii], c=colors[i])
+#    if rep==0:
+#        plt.legend(('Short None', 'Short Central', 'Short Matched', 'Long None', 'Long Central', 'Long Matched'))
+    if rep==0:
+        plt.ylabel('Percent correct')
+    plt.xticks([0,12,24])
+    plt.yticks([50,75,100])
+    plt.xlim([0, 32])
+    plt.title('Subject 1\nSession {}'.format(rep))
+    plt.ylim([50, 105])
+    plt.gca().spines['top'].set_visible(False)
+    plt.gca().spines['right'].set_visible(False)
+    
+#    plt.figure(2)
+#    plt.subplot(211)
+#    plt.title('No vis control')
+#    for ii, d in enumerate(dur_cond):
+#        plt.plot(sep_cond, improvement_none[ii], linestyles[ii], c='C0')
+#    plt.legend(dur_cond)
+#    plt.ylabel('Percent correct improvement')
+#    plt.title('Central vis control')
+#    plt.subplot(212)
+#    for ii, d in enumerate(dur_cond):
+#        plt.plot(sep_cond, improvement_central[ii], linestyles[ii], c='C1')
+#    plt.xlabel('Separation')
+#    plt.ylabel('Percent correct improvement')
+#    plt.title('No vis control')
+#        
+#    plt.figure(3)
+#    plt.subplot(211)
+#    for i, v in enumerate(vis_cond):
+#        plt.plot(dur_cond, np.nanmean(percent_correct[i], -1), colors[i])
+#    plt.xlabel('Stimulus duration')
+#    plt.ylabel('Percent correct')
+#    plt.legend(vis_cond)
+#    plt.subplot(212)
+#    for i, (v, c) in enumerate(zip(vis, ['C0', 'C1', 'C2'])):
+#        for ii, d in enumerate(dur_cond):
+#            plt.plot(d + sep_cond - 18 + dur_cond[0] / 10 * (np.random.rand(len(sep_cond),) - 0.5), percent_correct[i, ii], 'o-', c=colors[i], alpha=0.2)
+#    #        plt.plot(np.array(len(sep_cond) * [d]) + 2 * (sep_cond - sep_cond.mean() + np.random.rand()), percent_correct[i, ii], 'o', c=c, alpha=0.2)
+#    plt.xlabel('Each separation separated out by dur')
+#    plt.ylabel('Percent correct')
+#    plt.title('Average results across separation')
+#    
+#    plt.figure(4)
+#    for i, v in enumerate(vis_cond):
+#        plt.plot(dur_cond, percent_correct[i][:, sep_cond == 20], c=colors[i])
+#    plt.xlabel('Stimulus duration')
+#    plt.ylabel('Percent correct')
+#    plt.legend(vis_cond)
+#    plt.title('Results at 20 deg separation')
+    percent_correct_total.append(percent_correct)
+    
+    # %% fit thresholds
+    midpoint_estimate = np.log(10)
+    slope_estimate = (np.max(percent_correct) - np.min(percent_correct)) / (np.max(np.log(sep_cond)) - np.min(np.log(sep_cond))) / 100
+    params_init = [midpoint_estimate, slope_estimate, 1]
+    lower = .5
+    upper = 1
+    
+    def likelihood(params, x, y, lower):
+                return np.sum((y - sigmoid(x, lower=lower, upper=params[2], midpt=params[0], slope=params[1]))**2)
+    def likelihood_2(params, x, y, lower, upper):
+        return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=params[1]))**2)
+    def likelihood_3(params, x, y, upper, slope, lower):
+        return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=slope))**2)
+    
+    
+    [ok, _, _, _, w] = fmin(likelihood, params_init, (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct / 100, 0), 0), lower), full_output=True, disp=False)
+    if ok[-1] > 1:
+        [ok, _, _, _, w] = fmin(likelihood_2, params_init[:2], (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct, 0), 0) / 100, lower, upper), full_output=True, disp=False)
+        ok = np.concatenate((ok, np.expand_dims(np.array(1), 0)), 0)
+            
+    plt.figure(11)
+    plt.subplot(len(fnames), 1, rep+1)
+    x_plot_fit = np.arange(0, 40, .01)
+    #plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+    #                             midpt=ok[0], slope=ok[1]), 'k')
+    colors = ['#BBCC33', '#88CCE8', '#882255']
+    lws = [1, 3, 1]
+    thresholds = np.zeros((3, 2))
+    slopes = np.zeros((3, 2))
+    uppers = np.zeros((3, 2))
+    for i, v in enumerate(vis_cond):
+        for ii, d in enumerate(dur_cond):
+            [params_temp, _, _, _, w] = fmin(likelihood_3, ok[0], (np.log(sep_cond), percent_correct[i, ii] / 100, ok[2], ok[1], lower), full_output=True, disp=False)
+            plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+                                 midpt=params_temp, slope=ok[1]), linestyles[ii], lw=2, c=colors[i])
+            thresholds[i, ii] = -1. / ok[1] * np.log((ok[2] - .5) / (.75 - .5) - 1) + params_temp
+            slopes[i, ii] = ok[1]
+            uppers[i, ii] = ok[2]
+                
+    plt.xlim([0, 35])
+    if not rep:
+        plt.legend(('short no vis', 'long no vis', 'short central', 'long central', 'short matched', 'long matched'))
+    plt.title('Session {}'.format(rep))
+    
+    plt.figure(10)
+    [plt.plot([rep, rep+.1], t, 'o', c=c, alpha=0.5) for t, c in zip(thresholds, colors)]
+    plt.xlabel('Session (days)')
+    plt.ylabel('Threshold (deg)')
+    plt.legend(vis_cond)
+    threshold_days.append(np.exp(thresholds))
+    
+    plt.figure(40, figsize=(18/2.54, 12/2.54))
+    plt.subplot(3, 5, 5 * (0) + rep+1)
+    linestyles = [':', '-']
+    colors = ['#BBCC33', '#88CCE8', '#882255']
+    sep_fit = np.arange(0.01, 33, 0.1)
+    for ii, d in enumerate(dur_cond):
+        for i, v in enumerate(vis_cond):
+            plt.plot(sep_fit, 100* sigmoid(np.log(sep_fit), lower=0.5, upper=uppers[i, ii], midpt=thresholds[i, ii], slope=slopes[i,ii]), linestyles[ii], c=colors[i])
+    if rep == 0:
+        plt.ylabel('Percent correct')
+    plt.xticks([0,12,24])
+    plt.yticks([50,75,100])
+    plt.gca().spines['top'].set_visible(False)
+    plt.gca().spines['right'].set_visible(False)
+    plt.title('Subject {}\nSession {}'.format(1, rep))
+    plt.xlim([0, 32])
+    plt.ylim([50, 105])
+    plt.tight_layout()
+    plt.subplots_adjust(hspace=0.65, wspace=0.4, left=0.1, right=0.95)
+    plt.savefig('all_subject_fits_twodot_VR.pdf', dpi=600)
+    plt.savefig('all_subject_fits_twodot_VR.png')
+
+percent_correct_fit = np.nanmean(np.array(percent_correct_total), 0)
+vis_cond = ['2none', '1central', '0matched']
+days, mod_vis, mod_dur, mod_sep = np.meshgrid(
+        np.arange(len(fnames)), vis_cond, dur_cond, sep_cond, indexing='ij')
+
+import pandas as pd
+from pandas import DataFrame
+
+data_dict = dict(vis=mod_vis.ravel(),
+                 dur=mod_dur.ravel(),
+                 sep=np.log(mod_sep.ravel()),
+                 days=days.ravel(),
+                 per_cor=np.array(percent_correct_total).ravel())
+data = DataFrame(data_dict)
+
+formula = 'per_cor ~ C(vis) + dur + sep + C(vis):dur'
+#formula = 'dpc ~ C(snr) + C(angle) + C(snr):C(subj)'
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+md = smf.mixedlm(formula, data, groups=data.days)
+mdf = md.fit()
+print(mdf.summary())
+
+days, mod_vis, mod_dur = np.meshgrid(
+        np.arange(len(fnames)), vis_cond, dur_cond, indexing='ij')
+
+import pandas as pd
+from pandas import DataFrame
+
+data_dict = dict(vis=mod_vis.ravel(),
+                 dur=mod_dur.ravel(),
+                 days=days.ravel(),
+                 thresholds=np.array(threshold_days).ravel())
+data = DataFrame(data_dict)
+
+formula = 'thresholds ~ C(vis) + dur + C(vis):dur'
+#formula = 'dpc ~ C(snr) + C(angle) + C(snr):C(subj)'
+md = smf.mixedlm(formula, data, groups=data.days)
+mdf = md.fit()
+print(mdf.summary())
+days, mod_vis, mod_dur, mod_sep, _ = np.meshgrid(
+        np.arange(len(fnames)), vis_cond, dur_cond, sep_cond, np.arange(np.array(total_responses[-1]).shape[-1]), indexing='ij')
+
+total_responses_model = total_responses
+total_responses_model[0] = np.concatenate((total_responses[0], np.nan * np.ones((3, 2, 8, 8))), -1)
+total_responses_model = np.array(total_responses_model).ravel()
+data_dict = dict(vis=mod_vis.ravel()[~np.isnan(total_responses_model)],
+                 dur=mod_dur.ravel()[~np.isnan(total_responses_model)],
+                 days=days.ravel()[~np.isnan(total_responses_model)],
+                 sep=mod_sep.ravel()[~np.isnan(total_responses_model)],
+                 resp=total_responses_model[~np.isnan(total_responses_model)])
+data = DataFrame(data_dict)
+
+
+from statsmodels.genmod.generalized_linear_model import GLM
+from statsmodels.genmod import families
+# %%
+days, mod_vis, mod_dur, mod_sep, _ = np.meshgrid(
+        np.arange(len(fnames)), [0, 1, 2], dur_cond, sep_cond, np.arange(np.array(total_responses[-1]).shape[-1]), indexing='ij')
+data_dict = dict(vis=mod_vis.ravel()[~np.isnan(total_responses_model)],
+                 dur=mod_dur.ravel()[~np.isnan(total_responses_model)],
+                 days=days.ravel()[~np.isnan(total_responses_model)],
+                 sep=np.log(mod_sep.ravel()[~np.isnan(total_responses_model)]),
+                 resp=np.array(total_responses_model[~np.isnan(total_responses_model)], dtype=int))
+data = DataFrame(data_dict)
+data.to_csv('twodot_logit_resp_log_001.csv')
+res = GLM(data['resp'].astype(bool), data[['vis', 'dur', 'sep', 'days']].astype(float),
+          family=families.Binomial()).fit(attach_wls=True, atol=1e-10)
+print(res.summary())
+# %% fit thresholds
+midpoint_estimate = np.log(10)
+slope_estimate = (np.max(percent_correct_fit) - np.min(percent_correct_fit)) / (np.max(np.log(sep_cond)) - np.min(np.log(sep_cond))) / 100
+params_init = [midpoint_estimate, slope_estimate, 1]
+lower = .5
+upper = 1
+
+def likelihood(params, x, y, lower):
+            return np.sum((y - sigmoid(x, lower=lower, upper=params[2], midpt=params[0], slope=params[1]))**2)
+def likelihood_2(params, x, y, lower, upper):
+    return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=params[1]))**2)
+def likelihood_3(params, x, y, upper, slope, lower):
+    return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=slope))**2)
+
+[ok, _, _, _, w] = fmin(likelihood, params_init, (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct_fit / 100, 0), 0), lower), full_output=True, disp=False)
+if ok[-1] > 1:
+    [ok, _, _, _, w] = fmin(likelihood_2, params_init[:2], (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct_fit, 0), 0) / 100, lower, upper), full_output=True, disp=False)
+    ok = np.concatenate((ok, np.expand_dims(np.array(1), 0)), 0)
+        
+plt.figure()
+x_plot_fit = np.arange(0, 40, .01)
+#plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+#                             midpt=ok[0], slope=ok[1]), 'k')
+colors = ['#BBCC33', '#88CCE8', '#882255']
+lws = [1, 3, 1]
+thresholds = np.zeros((3, 2))
+for i, v in enumerate(vis_cond):
+    for ii, d in enumerate(dur_cond):
+        [params_temp, _, _, _, w] = fmin(likelihood_3, ok[0], (np.log(sep_cond), percent_correct_fit[i, ii] / 100, ok[2], ok[1], lower), full_output=True, disp=False)
+        plt.plot(x_plot_fit, 100 * sigmoid(np.log(x_plot_fit), lower=.5, upper=ok[2],
+                             midpt=params_temp, slope=ok[1]), linestyles[ii], lw=2, c=colors[i])
+        thresholds[i, ii] =  -1. / ok[1] * np.log((ok[2] - .5) / (.75 - .5) - 1) + params_temp
+plt.xlim([0, 35])
+plt.legend(('short no vis', 'long no vis', 'short central', 'long central', 'short matched', 'long matched'))
+
+resamp_estimates = ok
+
+
+# %%
+if do_resamp:
+    percent_correct_resamp = np.zeros((n_resamp, len(vis_cond), len(dur_cond), len(sep_cond)))
+    thresholds_resamp = np.zeros((n_resamp, len(vis_cond), len(dur_cond)))
+    total_responses = np.concatenate([t for t in total_responses], -1)
+    for n in np.arange(n_resamp):
+        for i, v in enumerate(vis_cond):
+            for ii, d in enumerate(dur_cond):
+                for iii, s in enumerate(sep_cond):
+                    cond_responses = total_responses[i, ii, iii]
+                    responses_resamp = np.random.choice(cond_responses, cond_responses.shape)
+                    percent_correct_resamp[n, i, ii, iii] = 100 * np.nansum(responses_resamp) / len(responses_resamp)
+        midpoint_estimate = thresholds.mean(-1).mean(-1)
+        slope_estimate = (np.max(percent_correct_resamp[n]) - np.min(percent_correct_resamp[n])) / (np.max(sep_cond) - np.min(sep_cond)) / 100
+        params_init = [midpoint_estimate, resamp_estimates[1], 1]
+        lower = .5
+        upper = 1
+        
+        def likelihood(params, x, y, lower):
+                    return np.sum((y - sigmoid(x, lower=lower, upper=params[2], midpt=params[0], slope=params[1]))**2)
+        def likelihood_2(params, x, y, lower, upper):
+            return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=params[1]))**2)
+        def likelihood_3(params, x, y, upper, slope, lower):
+            return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=slope))**2)
+        
+        
+        [ok, _, _, _, w] = fmin(likelihood, params_init, (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct_resamp[n] / 100, 0), 0), lower), full_output=True, disp=False)
+        if ok[-1] > 1:
+            [ok, _, _, _, w] = fmin(likelihood_2, params_init[:2], (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct_resamp[n], 0), 0) / 100, lower, upper), full_output=True, disp=False)
+            ok = np.concatenate((ok, np.expand_dims(np.array(1), 0)), 0)
+                
+        x_plot_fit = np.arange(0, 40, .01)
+        #plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+        #                             midpt=ok[0], slope=ok[1]), 'k')
+        colors = ['#BBCC33', '#88CCE8', '#882255']
+        lws = [1, 3, 1]
+        for i, v in enumerate(vis_cond):
+            for ii, d in enumerate(dur_cond):
+                [params_temp, _, _, _, w] = fmin(likelihood_3, ok[0], (np.log(sep_cond), percent_correct_resamp[n, i, ii] / 100, ok[2], ok[1], lower), full_output=True, disp=False)
+#                plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+#                                     midpt=params_temp, slope=ok[1]), linestyles[ii], lw=2, c=colors[i])
+                thresholds_resamp[n, i, ii] = np.exp(params_temp)
+# %%
+threshold_025 = np.zeros((3, 2))
+threshold_975 = np.zeros((3, 2))
+for i, v in enumerate(vis_cond):
+    for ii, d in enumerate(dur_cond):
+        sorted_thresh = np.sort(thresholds_resamp[:, i, ii])
+        threshold_025[i, ii] = sorted_thresh[25]
+        threshold_975[i, ii] = sorted_thresh[-25]
+plt.figure(80, figsize=(18/2.54, 10/2.54))
+plt.subplot(131)
+#[plt.plot(dur_cond, t) for t in thresholds]
+[plt.errorbar(dur_cond + off, t, yerr=(t-t_min, t_max-t), c=c, lw=2, elinewidth=1, capsize=3) for t, t_min, t_max, c, off in zip(np.exp(thresholds), threshold_025, threshold_975, colors, dur_cond[0] * np.array([-0.025, 0.025, 0]))]
+plt.xticks(dur_cond)
+plt.grid(axis='y')
+plt.xlabel('Duration (ms)')
+plt.ylabel(u'Threshold (°)')
+plt.legend(('None', 'Central', 'Matched'))
+plt.ylim([0, 12])
+plt.gca().spines['top'].set_visible(False)
+plt.gca().spines['right'].set_visible(False)
+threshold_days = np.array(threshold_days)
+plt.figure(60)
+for i, v in enumerate(vis_cond):
+    for d, t in enumerate(threshold_days):
+        plt.subplot(3, 5, d+1)
+        plt.plot(dur_cond, t[i], c=colors[i])
+        plt.title('001' + ' Day ' + str(d))
+        plt.ylim([0, 12])
+
+# %%
+plt.figure()
+threshold_days = np.array(threshold_days)
+for i, v in enumerate(vis_cond):
+    for ii, d in enumerate(dur_cond):
+        plt.plot(threshold_days[:, i, ii], linestyles[ii], c=colors[i])
+plt.plot(threshold_days.mean(-1).mean(-1), 'k', lw=2)
+plt.xlabel('Session (days)')
+plt.ylabel('Threshold (deg)')
+plt.legend(('short no vis', 'long no vis', 'short central', 'long central', 'short matched', 'long matched'))
+
+fnames = [['002_2021-05-04 16_39_13.367595',
+          '002_2021-05-06 12_49_22.079689',
+          '002_2021-05-10 13_51_38.917250',
+          '002_2021-05-12 10_49_02.358874', 
+          '002_2021-05-13 12_50_47.515484'],
+         ['003_2021-06-16 13_59_56.472697',
+          '003_2021-06-17 15_36_01.763243',
+          '003_2021-06-18 11_27_09.935492',
+          '003_2021-06-21 11_34_11.135630']]
+subjects = '002', '003'
+for sub in [0, 1]:
+    percent_correct_total = []
+    threshold_days = []
+    total_responses = []
+    for rep, fname in enumerate(fnames[sub]):
+    # %% read in data, parse conditions, judge correct responses
+        data = read_tab('raw_data/' + fname + '.tab')
+        
+        trial_ids = np.array([d['trial_id'][0][0] for d in data])
+        
+        raw_resp = np.array([int(d['response'][0][0]) if d['response'] else np.nan for d in data])[trial_ids != 'warmup']
+        correct_resp_raw = np.array([ast.literal_eval(d['correct'][0][0]) if (d['correct'] and d['correct'][0][0] != 'nan') else np.nan for d in data])[trial_ids != 'warmup'] # T, F, or nan
+        
+        if fname=='003_2021-06-17 15_36_01.763243':
+            raw_resp[(10 * 40):(11 * 40)] = np.nan
+            correct_resp_raw[(10 * 40):(11 * 40)] = np.nan
+        if fname=='003_2021-06-16 13_59_56.472697':
+            correct_resp = correct_resp_raw[~np.isnan(correct_resp_raw)]
+            trial_ids = trial_ids[~np.isnan(correct_resp_raw)]
+        else:
+            correct_resp = correct_resp_raw
+        
+        trial_ids = trial_ids[trial_ids != 'warmup']
+    #    
+        # %% params
+        if rep:
+            n_trials = 22
+        else:
+            n_trials = 11 # trials per session
+        sep_cond = np.arange(4, 25, 4)
+        vis_cond = ['none', 'central', 'matched']
+        responses = np.zeros((len(vis_cond), 2, len(sep_cond), n_trials)) # vis x dur x sep
+        trial_end_dur_inds = [str.find(t, '_') for t in trial_ids]
+        durs = np.array([int(t[3:t_end]) for t, t_end in zip(trial_ids, trial_end_dur_inds)])
+        trial_sep_inds = [str.find(t, 'p') for t in trial_ids]
+        trial_center_inds = [str.find(t, 'c') for t in trial_ids]
+        trial_lr_inds = [str.find(t, 'l') for t in trial_ids]
+        seps = np.array([int(t[t_s + 1:t_c - 1]) for t, t_s, t_c in zip(trial_ids, trial_sep_inds, trial_center_inds)])
+        lr = [int(t[t_l + 2]) for t, t_l in zip(trial_ids, trial_lr_inds)]
+        vis = np.array([t[t_l + 4:] for t, t_l in zip(trial_ids, trial_lr_inds)])
+        
+        dur_cond = np.unique(durs)
+        # %% for loop tree for conditions
+        for i, v in enumerate(vis_cond):
+            for ii, d in enumerate(dur_cond):
+                for iii, s in enumerate(sep_cond):
+                    vis_match = vis == v
+                    dur_match = durs == d
+                    sep_match = seps == s
+                    inds = vis_match * dur_match * sep_match
+                    responses[i, ii, iii] = correct_resp[inds]
+        total_responses.append(responses)
+        # %% calculate a few basic measures
+        
+        percent_correct = 100 * np.nansum(responses, -1) / responses.shape[-1]
+        improvement_none = percent_correct[-1] - percent_correct[0]
+        improvement_central = percent_correct[-1] - percent_correct[1]
+        # %% basic plot of the raw results
+        
+        plt.figure(20, figsize=(18/2.54, 12/2.54))
+        plt.subplot(3, 5, 5 * (sub + 1) + rep+1)
+        linestyles = [':', '-']
+        colors = ['#BBCC33', '#88CCE8', '#882255']
+        for ii, d in enumerate(dur_cond):
+            for i, v in enumerate(vis_cond):
+                plt.plot(sep_cond, percent_correct[i, ii], linestyles[ii], c=colors[i])
+        if (5 * (sub + 1) + rep+1)==14:
+            plt.legend(('Short None', 'Short Central', 'Short Matched', 'Long None', 'Long Central', 'Long Matched'), bbox_to_anchor=(1, 1.15), loc='left')
+        if (sub + 2)==3:
+            plt.xlabel(u'Separation (°)')
+        if rep == 0:
+            plt.ylabel('Percent correct')
+        plt.xticks([0,12,24])
+        plt.yticks([50,75,100])
+        plt.gca().spines['top'].set_visible(False)
+        plt.gca().spines['right'].set_visible(False)
+        plt.title('Subject {}\nSession {}'.format(sub + 2, rep))
+        plt.xlim([0, 32])
+        plt.ylim([50, 105])
+        plt.tight_layout()
+        plt.subplots_adjust(hspace=0.65, wspace=0.4, left=0.1, right=0.95)
+        plt.savefig('all_subject_twodot_VR.pdf', dpi=600)
+        plt.savefig('all_subject_twodot_VR.png')
+        plt.figure(2)
+        plt.subplot(211)
+        plt.title('No vis control')
+        for ii, d in enumerate(dur_cond):
+            plt.plot(sep_cond, improvement_none[ii], linestyles[ii], c='C0')
+        plt.legend(dur_cond)
+        plt.ylabel('Percent correct improvement')
+        plt.title('Central vis control')
+        plt.subplot(212)
+        for ii, d in enumerate(dur_cond):
+            plt.plot(sep_cond, improvement_central[ii], linestyles[ii], c='C1')
+        plt.xlabel('Separation')
+        plt.ylabel('Percent correct improvement')
+        plt.title('No vis control')
+            
+        plt.figure(3)
+        plt.subplot(211)
+        for i, v in enumerate(vis_cond):
+            plt.plot(dur_cond, np.nanmean(percent_correct[i], -1), colors[i])
+        plt.xlabel('Stimulus duration')
+        plt.ylabel('Percent correct')
+        plt.legend(vis_cond)
+        plt.subplot(212)
+        for i, (v, c) in enumerate(zip(vis, ['C0', 'C1', 'C2'])):
+            for ii, d in enumerate(dur_cond):
+                plt.plot(d + sep_cond - 18 + dur_cond[0] / 10 * (np.random.rand(len(sep_cond),) - 0.5), percent_correct[i, ii], 'o-', c=colors[i], alpha=0.2)
+        #        plt.plot(np.array(len(sep_cond) * [d]) + 2 * (sep_cond - sep_cond.mean() + np.random.rand()), percent_correct[i, ii], 'o', c=c, alpha=0.2)
+        plt.xlabel('Each separation separated out by dur')
+        plt.ylabel('Percent correct')
+        plt.title('Average results across separation')
+        
+        plt.figure(4)
+        for i, v in enumerate(vis_cond):
+            plt.plot(dur_cond, percent_correct[i][:, sep_cond == 20], c=colors[i])
+        plt.xlabel('Stimulus duration')
+        plt.ylabel('Percent correct')
+        plt.legend(vis_cond)
+        plt.title('Results at 20 deg separation')
+        percent_correct_total.append(percent_correct)
+        
+        # %% fit thresholds
+        midpoint_estimate = np.log(10)
+        slope_estimate = (np.max(percent_correct) - np.min(percent_correct)) / (np.max(np.log(sep_cond)) - np.min(np.log(sep_cond))) / 100
+        params_init = [midpoint_estimate, slope_estimate, 1]
+        lower = .5
+        upper = 1
+        
+        def likelihood(params, x, y, lower):
+                    return np.sum((y - sigmoid(x, lower=lower, upper=params[2], midpt=params[0], slope=params[1]))**2)
+        def likelihood_2(params, x, y, lower, upper):
+            return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=params[1]))**2)
+        def likelihood_3(params, x, y, upper, slope, lower):
+            return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=slope))**2)
+        
+        
+        [ok, _, _, _, w] = fmin(likelihood, params_init, (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct / 100, 0), 0), lower), full_output=True, disp=False)
+        if ok[-1] > 1:
+            [ok, _, _, _, w] = fmin(likelihood_2, params_init[:2], (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct, 0), 0) / 100, lower, upper), full_output=True, disp=False)
+            ok = np.concatenate((ok, np.expand_dims(np.array(1), 0)), 0)
+        
+        
+        
+        
+        plt.figure(11)
+        plt.subplot(len(fnames[sub]), 1, rep+1)
+        x_plot_fit = np.arange(0, 40, .01)
+        #plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+        #                             midpt=ok[0], slope=ok[1]), 'k')
+        colors = ['#BBCC33', '#88CCE8', '#882255']
+        lws = [1, 3, 1]
+        thresholds = np.zeros((3, 2))
+        slopes = np.zeros((3, 2))
+        uppers = np.zeros((3, 2))
+        for i, v in enumerate(vis_cond):
+            for ii, d in enumerate(dur_cond):
+                [params_temp, _, _, _, w] = fmin(likelihood_3, ok[0], (np.log(sep_cond), percent_correct[i, ii] / 100, ok[2], ok[1], lower), full_output=True, disp=False)
+                plt.plot(x_plot_fit, 100 * sigmoid(np.log(x_plot_fit), lower=.5, upper=ok[2],
+                                     midpt=params_temp, slope=ok[1]), linestyles[ii], lw=2, c=colors[i])
+                thresholds[i, ii] =  -1. / ok[1] * np.log((ok[2] - .5) / (.75 - .5) - 1) + params_temp
+                slopes[i, ii] = ok[1]
+                uppers[i, ii] = ok[2]
+                
+        plt.xlim([0, 35])
+        if not rep:
+            plt.legend(('short no vis', 'long no vis', 'short central', 'long central', 'short matched', 'long matched'))
+        plt.title('Session {}'.format(rep))
+        
+        plt.figure(10)
+        [plt.plot([rep, rep+.1], t, 'o', c=c, alpha=0.5) for t, c in zip(np.exp(thresholds), colors)]
+        plt.xlabel('Session (days)')
+        plt.ylabel('Threshold (deg)')
+        plt.legend(vis_cond)
+        threshold_days.append(np.exp(thresholds))
+        
+        plt.figure(40, figsize=(18/2.54, 12/2.54))
+        plt.subplot(3, 5, 5 * (sub + 1) + rep+1)
+        linestyles = [':', '-']
+        colors = ['#BBCC33', '#88CCE8', '#882255']
+        sep_fit = np.arange(0.01, 33, 0.1)
+        for ii, d in enumerate(dur_cond):
+            for i, v in enumerate(vis_cond):
+                plt.plot(sep_fit, 100* sigmoid(np.log(sep_fit), lower=0.5, upper=uppers[i, ii], midpt=thresholds[i, ii], slope=slopes[i,ii]), linestyles[ii], c=colors[i])
+        if (5 * (sub + 1) + rep+1)==14:
+            plt.legend(('Short None', 'Short Central', 'Short Matched', 'Long None', 'Long Central', 'Long Matched'), bbox_to_anchor=(1, 1.15), loc='left')
+        if (sub + 2)==3:
+            plt.xlabel(u'Separation (°)')
+        if rep == 0:
+            plt.ylabel('Percent correct')
+        plt.xticks([0,12,24])
+        plt.yticks([50,75,100])
+        plt.gca().spines['top'].set_visible(False)
+        plt.gca().spines['right'].set_visible(False)
+        plt.title('Subject {}\nSession {}'.format(sub + 2, rep))
+        plt.xlim([0, 32])
+        plt.ylim([50, 105])
+        plt.tight_layout()
+        plt.subplots_adjust(hspace=0.65, wspace=0.4, left=0.1, right=0.95)
+        plt.savefig('all_subject_fits_twodot_VR.pdf', dpi=600)
+        plt.savefig('all_subject_fits_twodot_VR.png')
+        
+    percent_correct_fit = np.nanmean(np.array(percent_correct_total), 0)
+    vis_cond = ['2none', '1central', '0matched']
+    days, mod_vis, mod_dur, mod_sep = np.meshgrid(
+            np.arange(len(fnames[sub])), vis_cond, dur_cond, sep_cond, indexing='ij')
+    
+    import pandas as pd
+    from pandas import DataFrame
+    
+    data_dict = dict(vis=mod_vis.ravel(),
+                     dur=mod_dur.ravel(),
+                     sep=mod_sep.ravel(),
+                     days=days.ravel(),
+                     per_cor=np.array(percent_correct_total).ravel())
+    data = DataFrame(data_dict)
+    
+    formula = 'per_cor ~ C(vis) + dur + sep + C(vis):dur'
+    #formula = 'dpc ~ C(snr) + C(angle) + C(snr):C(subj)'
+    import statsmodels.api as sm
+    import statsmodels.formula.api as smf
+    md = smf.mixedlm(formula, data, groups=data.days)
+    mdf = md.fit()
+    print(mdf.summary())
+    
+    days, mod_vis, mod_dur = np.meshgrid(
+            np.arange(len(fnames[sub])), vis_cond, dur_cond, indexing='ij')
+    
+    data_dict = dict(vis=mod_vis.ravel(),
+                     dur=mod_dur.ravel(),
+                     days=days.ravel(),
+                     thresholds=np.array(threshold_days).ravel())
+    data = DataFrame(data_dict)
+    
+    formula = 'thresholds ~ C(vis) + dur + C(vis):dur'
+    #formula = 'dpc ~ C(snr) + C(angle) + C(snr):C(subj)'
+    md = smf.mixedlm(formula, data, groups=data.days)
+    mdf = md.fit()
+    print(mdf.summary())
+    days, mod_vis, mod_dur, mod_sep, _ = np.meshgrid(
+            np.arange(len(fnames[sub])), vis_cond, dur_cond, sep_cond, np.arange(np.array(total_responses[-1]).shape[-1]), indexing='ij')
+    
+    total_responses_model = total_responses
+    total_responses_model[0] = np.concatenate((total_responses[0], np.nan * np.ones((3, 2, 6, 11))), -1)
+    total_responses_model = np.array(total_responses_model).ravel()
+    data_dict = dict(vis=mod_vis.ravel()[~np.isnan(total_responses_model)],
+                     dur=mod_dur.ravel()[~np.isnan(total_responses_model)],
+                     days=days.ravel()[~np.isnan(total_responses_model)],
+                     sep=mod_sep.ravel()[~np.isnan(total_responses_model)],
+                     resp=total_responses_model[~np.isnan(total_responses_model)])
+    data = DataFrame(data_dict)
+    
+    
+#    from statsmodels.genmod.generalized_linear_model import GLM
+#    from statsmodels.genmod import families
+    # %%
+    days, mod_vis, mod_dur, mod_sep, _ = np.meshgrid(
+            np.arange(len(fnames[sub])), [0, 1, 2], dur_cond, sep_cond, np.arange(np.array(total_responses[-1]).shape[-1]), indexing='ij')
+    data_dict = dict(vis=mod_vis.ravel()[~np.isnan(total_responses_model)],
+                     dur=mod_dur.ravel()[~np.isnan(total_responses_model)],
+                     days=days.ravel()[~np.isnan(total_responses_model)],
+                     sep=np.log(mod_sep.ravel()[~np.isnan(total_responses_model)]),
+                     resp=np.array(total_responses_model[~np.isnan(total_responses_model)], dtype=int))
+
+    data = DataFrame(data_dict)
+    data.to_csv('twodot_logit_resp_log_' + subjects[sub] + '.csv')
+    print('twodot_logit_resp_' + subjects[sub] + '.csv')
+    res = GLM(data['resp'].astype(bool), data[['vis', 'dur', 'sep', 'days']].astype(float),
+              family=families.Binomial()).fit(attach_wls=True, atol=1e-10)
+    print(res.summary())
+    #formula = 'resp ~ C(vis) + dur + sep + C(vis):dur'
+    ##formula = 'dpc ~ C(snr) + C(angle) + C(snr):C(subj)'
+    #md = smf.mixedlm(formula, data, groups=data.days)
+    #mdf = md.fit()
+    #print(mdf.summary())
+    # %% fit thresholds
+    midpoint_estimate = np.log(10)
+    slope_estimate = (np.max(percent_correct_fit) - np.min(percent_correct_fit)) / (np.max(np.log(sep_cond)) - np.min(np.log(sep_cond))) / 100
+    params_init = [midpoint_estimate, slope_estimate, 1]
+    lower = .5
+    upper = 1
+    
+    def likelihood(params, x, y, lower):
+                return np.sum((y - sigmoid(x, lower=lower, upper=params[2], midpt=params[0], slope=params[1]))**2)
+    def likelihood_2(params, x, y, lower, upper):
+        return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=params[1]))**2)
+    def likelihood_3(params, x, y, upper, slope, lower):
+        return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=slope))**2)
+    
+    
+    [ok, _, _, _, w] = fmin(likelihood, params_init, (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct_fit / 100, 0), 0), lower), full_output=True, disp=False)
+    if ok[-1] > 1:
+        [ok, _, _, _, w] = fmin(likelihood_2, params_init[:2], (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct_fit, 0), 0) / 100, lower, upper), full_output=True, disp=False)
+        ok = np.concatenate((ok, np.expand_dims(np.array(1), 0)), 0)
+            
+    plt.figure()
+    x_plot_fit = np.arange(0, 40, .01)
+    #plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+    #                             midpt=ok[0], slope=ok[1]), 'k')
+    colors = ['#BBCC33', '#88CCE8', '#882255']
+    lws = [1, 3, 1]
+    thresholds = np.zeros((3, 2))
+    for i, v in enumerate(vis_cond):
+        for ii, d in enumerate(dur_cond):
+            [params_temp, _, _, _, w] = fmin(likelihood_3, ok[0], (np.log(sep_cond), percent_correct_fit[i, ii] / 100, ok[2], ok[1], lower), full_output=True, disp=False)
+            plt.plot(x_plot_fit, 100 * sigmoid(np.log(x_plot_fit), lower=.5, upper=ok[2],
+                                 midpt=params_temp, slope=ok[1]), linestyles[ii], lw=2, c=colors[i])
+            thresholds[i, ii] =  -1. / ok[1] * np.log((ok[2] - .5) / (.75 - .5) - 1) + params_temp
+    plt.xlim([0, 35])
+    plt.legend(('short no vis', 'long no vis', 'short central', 'long central', 'short matched', 'long matched'))
+    
+    resamp_estimates = ok
+    
+    # %%
+    if do_resamp:
+        percent_correct_resamp = np.zeros((n_resamp, len(vis_cond), len(dur_cond), len(sep_cond)))
+        thresholds_resamp = np.zeros((n_resamp, len(vis_cond), len(dur_cond)))
+        total_responses_resamp = np.concatenate([t for t in total_responses], -1)
+        for n in np.arange(n_resamp):
+            for i, v in enumerate(vis_cond):
+                for ii, d in enumerate(dur_cond):
+                    for iii, s in enumerate(sep_cond):
+                        cond_responses = total_responses_resamp[i, ii, iii]
+                        responses_resamp = np.random.choice(cond_responses, cond_responses.shape)
+                        percent_correct_resamp[n, i, ii, iii] = 100 * np.nansum(responses_resamp) / len(responses_resamp)
+            midpoint_estimate = thresholds.mean(-1).mean(-1)
+            params_init = [midpoint_estimate, resamp_estimates[1], 1]
+            lower = .5
+            upper = 1
+            
+            def likelihood(params, x, y, lower):
+                        return np.sum((y - sigmoid(x, lower=lower, upper=params[2], midpt=params[0], slope=params[1]))**2)
+            def likelihood_2(params, x, y, lower, upper):
+                return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=params[1]))**2)
+            def likelihood_3(params, x, y, upper, slope, lower):
+                return np.sum((y - sigmoid(x, lower=lower, upper=upper, midpt=params[0], slope=slope))**2)
+            
+            
+            [ok, _, _, _, w] = fmin(likelihood, params_init, (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct_resamp[n] / 100, 0), 0), lower), full_output=True, disp=False)
+            if ok[-1] > 1:
+                [ok, _, _, _, w] = fmin(likelihood_2, params_init[:2], (np.log(sep_cond), np.nanmean(np.nanmean(percent_correct_resamp[n], 0), 0) / 100, lower, upper), full_output=True, disp=False)
+                ok = np.concatenate((ok, np.expand_dims(np.array(1), 0)), 0)
+                    
+            x_plot_fit = np.arange(0, 40, .01)
+            #plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+            #                             midpt=ok[0], slope=ok[1]), 'k')
+            colors = ['#BBCC33', '#88CCE8', '#882255']
+            lws = [1, 3, 1]
+            for i, v in enumerate(vis_cond):
+                for ii, d in enumerate(dur_cond):
+                    [params_temp, _, _, _, w] = fmin(likelihood_3, ok[0], (np.log(sep_cond), percent_correct_resamp[n, i, ii] / 100, ok[2], ok[1], lower), full_output=True, disp=False)
+    #                plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+    #                                     midpt=params_temp, slope=ok[1]), linestyles[ii], lw=2, c=colors[i])
+                    thresholds_resamp[n, i, ii] = np.exp(params_temp)
+    #                plt.plot(x_plot_fit, 100 * sigmoid(x_plot_fit, lower=.5, upper=ok[2],
+    #                             midpt=params_temp, slope=ok[1]), linestyles[ii], lw=2, c=colors[i])
+    # %%
+    threshold_025 = np.zeros((3, 2))
+    threshold_975 = np.zeros((3, 2))
+    for i, v in enumerate(vis_cond):
+        for ii, d in enumerate(dur_cond):
+            sorted_thresh = np.sort(thresholds_resamp[:, i, ii])
+            threshold_025[i, ii] = sorted_thresh[25]
+            threshold_975[i, ii] = sorted_thresh[-25]
+    plt.figure(80, figsize=(18/2.54, 10/2.54))
+    plt.subplot(1, 3, sub+2)   #[plt.plot(dur_cond, t) for t in thresholds]
+
+    [plt.errorbar(dur_cond + off, t, yerr=(t-t_min, t_max-t), c=c, lw=2, elinewidth=1, capsize=3) for t, t_min, t_max, c, off in zip(np.exp(thresholds), threshold_025, threshold_975, colors, dur_cond[0] * np.array([-0.025, 0.025, 0]))]
+    plt.xlabel('Duration (ms)')
+    plt.xticks(dur_cond)
+    plt.grid(axis='y')
+    plt.gca().spines['top'].set_visible(False)
+    plt.gca().spines['right'].set_visible(False)
+#    plt.ylabel('Threshold (deg)')
+    plt.tight_layout()
+#    plt.legend(vis_cond, loc='lower right')
+    plt.ylim([0, 12])
+    plt.savefig('summary_thresholds_twodot_VR.pdf', dpi=600)
+    plt.savefig('summary_thresholds_twodot_VR.png')
+    
+    threshold_days = np.array(threshold_days)
+#    plt.figure(60)
+#    for i, v in enumerate(vis_cond):
+#        for d, t in enumerate(threshold_days):
+#            plt.subplot(3, 5, (sub + 1) * 5 + d+1)
+#            plt.plot(dur_cond, t[i], c=colors[i])
+#            plt.title(subjects[sub] + ' Day ' + str(d))
+#            plt.ylim([0, 12])
+#    # %%
+#    plt.figure()
+#    threshold_days = np.array(threshold_days)
+#    for i, v in enumerate(vis_cond):
+#        for ii, d in enumerate(dur_cond):
+#            plt.plot(threshold_days[:, i, ii], linestyles[ii], c=colors[i])
+#    plt.plot(threshold_days.mean(-1).mean(-1), 'k', lw=2)
+#    plt.xlabel('Session (days)')
+#    plt.ylabel('Threshold (deg)')
+#    plt.legend(('short no vis', 'long no vis', 'short central', 'long central', 'short matched', 'long matched'))
